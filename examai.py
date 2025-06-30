@@ -94,8 +94,14 @@ async def generate_open_ended_questions_with_openai_assistant(student_name: str,
                 break
         
         try:
-            generated_questions = json.loads(response_content.strip())
-            questions_list = [q for q in generated_questions["questions"]]
+            parsed_response = json.loads(response_content.strip())
+            
+            if isinstance(parsed_response, list):
+                questions_list = parsed_response
+            elif isinstance(parsed_response, dict) and "questions" in parsed_response:
+                questions_list = parsed_response["questions"]
+            else:
+                raise ValueError("OpenAI'den beklenen formatta yanıt alınamadı: Liste veya 'questions' anahtarı bulunamadı.")
             
             return questions_list
         except json.JSONDecodeError as e:
