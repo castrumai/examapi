@@ -1,22 +1,20 @@
 import os
 from fastapi import FastAPI, HTTPException, Header, status, Depends
-from pydantic import BaseModel
-from typing import List, Optional, Dict, Any, Union
+from pydantic import BaseModel, Field
+from typing import List, Optional, Dict, Any
 import examai
-import pandas as pd
-from io import StringIO
 from dotenv import load_dotenv
 from fastapi.concurrency import run_in_threadpool
-from typing import List
 
 load_dotenv()
 
 app = FastAPI(
     title="ExamAI API",
-    description="Python tabanlı tüm sınav ve değerlendirme işlemlerini yürüten API.",
-    version="1.0.0"
+    description="Yeni nesil OpenAI asistanları ile güncellenmiş, sınav ve değerlendirme işlemlerini yürüten API.",
+    version="2.0.0"
 )
 
+# --- API Anahtar Doğrulaması ---
 CASTRUMAI_API_KEY_HEADER_NAME = "castrumai-apikey"
 VALID_CASTRUMAI_API_KEY = os.getenv("CASTRUMAI_API_KEY")
 
@@ -28,6 +26,7 @@ async def verify_castrumai_api_key(castrumai_apikey: Optional[str] = Header(None
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Geçersiz CastrumAI API Anahtarı")
     return True
 
+# --- Pydantic Modelleri (Değişiklik yok) ---
 class OpenEndedQuestionGenerationRequest(BaseModel):
     student_name: str
     number_of_questions: int
@@ -39,7 +38,6 @@ class MultipleChoiceQuestionGenerationRequest(BaseModel):
 
 class AnswerEvaluationRequest(BaseModel):
     student_name: str
-    question_type: str
 
 class AnswerUpdateRequest(BaseModel):
     student_name: str
@@ -68,6 +66,7 @@ class CreateExamRecordRequest(BaseModel):
     question_type: str
     questions: Optional[List[str]] = None
     choices: Optional[List[List[str]]] = None
+    correct_answers: Optional[List[str]] = None
     answers: Optional[List[str]] = None
     results: Optional[List[str]] = None
     total_score: Optional[float] = 0.0
@@ -77,15 +76,18 @@ class DeleteExamRecordRequest(BaseModel):
     student_name: str
     question_type: str
 
-class AppendQuestionRequest(BaseModel):
+class UpdateQuestionValueRequest(BaseModel):
     student_name: str
     question_type: str
+    question_index: int
     question: str
+    correct_answer: Optional[str] = None
 
-class AppendAnswerRequest(BaseModel):
+class UpdateAllQuestionsRequest(BaseModel):
     student_name: str
     question_type: str
-    answer: str
+    questions: List[str]
+    correct_answers: Optional[List[str]] = None
 
 class UpdateChoiceRequest(BaseModel):
     student_name: str
@@ -96,149 +98,184 @@ class UpdateChoiceRequest(BaseModel):
 class UpdateQuestionChoicesRequest(BaseModel):
     student_name: str
     question_index: int
-    choices: List[str] # Belirli bir sorunun tüm seçenekleri
+    choices: List[str]
 
 class UpdateAllChoicesRequest(BaseModel):
     student_name: str
-    choices: List[List[str]] # Tüm soruların tüm seçenekleri
-
-class UpdateQuestionValueRequest(BaseModel):
-    student_name: str
-    question_type: str
-    question_index: int
-    value: str
-
-class UpdateAllQuestionsRequest(BaseModel):
-    student_name: str
-    question_type: str
-    questions: List[str]
+    choices: List[List[str]]
 
 class AddPlagiarismViolationRequest(BaseModel):
     student_name: str
     question_type: str
     violation_text: str
 
-@app.post("/generate/open-ended", summary="Açık uçlu sorular oluşturur ve veri tabanına ekler.")
+class UpdateCorrectAnswerRequest(BaseModel):
+    student_name: str
+    question_type: str
+    index: int
+    correct_answer: str
+
+class UpdateAllCorrectAnswersRequest(BaseModel):
+    student_name: str
+    question_type: str
+    correct_answers: List[str]
+
+class DeleteSingleQuestionRequest(BaseModel):
+    student_name: str
+    index: int
+
+class DeleteAllQuestionsRequest(BaseModel):
+    student_name: str
+
+# --- API Uç Noktaları ---
+
+@app.post("/generate/open-ended", summary="Yeni asistanla açık uçlu sorular ve cevapları oluşturur ve mevcut kayda ekler.")
 async def generate_open_ended(
     request: OpenEndedQuestionGenerationRequest,
     _ = Depends(verify_castrumai_api_key)
 ):
     try:
-        existing_record = await examai.get_student_exam_record(request.student_name, "Open Ended")
-        existing_questions = []
-        if existing_record and existing_record.get('questions'):
-            existing_questions = existing_record['questions']
-
-        newly_generated_questions = await examai.generate_open_ended_questions_with_openai_assistant(
-            request.student_name,
+        generated_data = await examai.generate_open_ended_questions_with_openai_assistant(
             request.number_of_questions
         )
 
-        all_questions = existing_questions + newly_generated_questions
-        
+        new_questions = generated_data.get("questions", [])
+        new_correct_answers = generated_data.get("correct_answers", [])
+
+        if not new_questions or not new_correct_answers:
+            raise HTTPException(status_code=500, detail="Asistandan soru veya cevap verisi alınamadı.")
+
+        existing_record = await examai.get_student_exam_record(request.student_name, "Open Ended")
+
+        if existing_record:
+            existing_questions = existing_record.get('questions') or []
+            existing_correct_answers = existing_record.get('correct_answers') or []
+            
+            all_questions = existing_questions + new_questions
+            all_correct_answers = existing_correct_answers + new_correct_answers
+        else:
+            all_questions = new_questions
+            all_correct_answers = new_correct_answers
+
         record_data = {
             "student_name": request.student_name,
             "question_type": "Open Ended",
-            "questions": all_questions
+            "questions": all_questions,
+            "correct_answers": all_correct_answers
         }
         
         await examai.upsert_exam_record(record_data)
 
-        return {"message": "Açık uçlu sorular başarıyla üretildi ve mevcut kayda eklendi.", "new_questions_added": newly_generated_questions}
+        return new_questions
+
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Açık uçlu sorular üretilirken veya kaydedilirken hata oluştu: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Açık uçlu sorular üretilirken hata oluştu: {e}")
 
 
-@app.post("/generate/mcq", summary="Çoktan seçmeli sorular oluşturur ve veri tabanına ekler. Bir öğrenci için seçenek sayısı her soru için aynı olmak zorundadır.")
+@app.post("/generate/mcq", summary="Yeni asistanla çoktan seçmeli soruları, şıkları ve doğru cevapları oluşturur ve mevcut kayda ekler.")
 async def generate_mcq(
     request: MultipleChoiceQuestionGenerationRequest,
     _ = Depends(verify_castrumai_api_key)
 ):
     try:
         existing_record = await examai.get_student_exam_record(request.student_name, "Multiple Choice")
-        existing_questions = []
-        existing_choices = []
-        if existing_record:
-            existing_questions = existing_record.get('questions', [])
-            existing_choices = existing_record.get('choices', [])
 
-        newly_generated_mcq_data = await examai.generate_multiple_choice_questions_with_openai_assistant(
-            request.student_name,
+        # --- YENİ KONTROL MEKANİZMASI ---
+        if existing_record:
+            existing_choices = existing_record.get('choices')
+            # Eğer mevcut sınavda daha önceden eklenmiş şıklar varsa
+            if existing_choices and len(existing_choices) > 0 and len(existing_choices[0]) > 0:
+                # Mevcut şık sayısını al
+                current_choice_count = len(existing_choices[0])
+                # Yeni istenen şık sayısı ile karşılaştır
+                if current_choice_count != request.number_of_choices:
+                    # Eğer farklıysa, hata fırlat
+                    raise HTTPException(
+                        status_code=400, # Bad Request
+                        detail=f"Mevcut sınavda her soru için {current_choice_count} şık bulunmaktadır. Farklı sayıda ({request.number_of_choices}) şıkka sahip yeni sorular ekleyemezsiniz. Lütfen aynı şık sayısını kullanın veya yeni bir sınav oluşturun."
+                    )
+        # --- KONTROL MEKANİZMASI SONU ---
+
+        generated_data = await examai.generate_multiple_choice_questions_with_openai_assistant(
             request.number_of_questions,
             request.number_of_choices
         )
         
-        new_questions = newly_generated_mcq_data.get("questions", [])
-        new_choices = newly_generated_mcq_data.get("choices", [])
+        new_questions = generated_data.get("questions", [])
+        new_choices = generated_data.get("choices", [])
+        new_correct_answers = generated_data.get("correct_answers", [])
 
-        if not new_questions:
-            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="OpenAI Asistanlarından çoktan seçmeli soru ayrıntıları alınamadı.")
+        if not all([new_questions, new_choices, new_correct_answers]):
+            raise HTTPException(status_code=500, detail="Asistandan eksik veya hatalı veri alındı.")
 
-        all_questions = existing_questions + new_questions
-        all_choices = existing_choices + new_choices
+        if existing_record:
+            existing_questions = existing_record.get('questions') or []
+            existing_choices_list = existing_record.get('choices') or []
+            existing_correct_answers = existing_record.get('correct_answers') or []
+
+            all_questions = existing_questions + new_questions
+            all_choices = existing_choices_list + new_choices
+            all_correct_answers = existing_correct_answers + new_correct_answers
+        else:
+            all_questions = new_questions
+            all_choices = new_choices
+            all_correct_answers = new_correct_answers
 
         record_data = {
             "student_name": request.student_name,
             "question_type": "Multiple Choice",
             "questions": all_questions,
-            "choices": all_choices
+            "choices": all_choices,
+            "correct_answers": all_correct_answers
         }
         
         await examai.upsert_exam_record(record_data)
 
-        return {
-            "message": "Çoktan seçmeli sorular başarıyla üretildi ve mevcut kayda eklendi.", 
-            "new_questions_added": new_questions, 
-            "new_choices_added": new_choices
-        }
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Çoktan seçmeli sorular üretilirken veya kaydedilirken hata oluştu: {e}")
+        return generated_data
 
-@app.post("/evaluate", summary="Verilen cevapları değerlendirir.")
-async def evaluate_answers_with_openai(
+    except HTTPException as e:
+        # Önceden fırlatılan HTTP hatalarını doğrudan gönder
+        raise e
+    except Exception as e:
+        # Diğer tüm hatalar için genel bir hata mesajı göster
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Çoktan seçmeli sorular üretilirken beklenmeyen bir hata oluştu: {e}")
+
+
+@app.post("/evaluate", summary="Verilen açık uçlu cevapları değerlendirir.")
+async def evaluate_answers(
     request: AnswerEvaluationRequest,
     _ = Depends(verify_castrumai_api_key)
 ):
+    question_type = "Open Ended"
     try:
-        exam_record = await examai.get_student_exam_record(request.student_name, request.question_type)
+        exam_record = await examai.get_student_exam_record(request.student_name, question_type)
 
         if not exam_record:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Değerlendirme için sınav kaydı bulunamadı.")
 
-        questions_from_db = exam_record.get('questions', [])
-        answers_from_db = exam_record.get('answers', [])
-        choices_from_db = None
+        questions = exam_record.get('questions')
+        correct_answers = exam_record.get('correct_answers')
+        answers = exam_record.get('answers')
 
-        if request.question_type == "Multiple Choice":
-            choices_from_db = exam_record.get('choices', [])
-            if not choices_from_db:
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Çoktan seçmeli sorular için seçenekler bulunamadı.")
+        if not all([questions, correct_answers, answers]):
+            raise HTTPException(status_code=400, detail="Eksik cevap var.")
+        
+        if not (len(questions) == len(correct_answers) == len(answers)):
+            raise HTTPException(status_code=400, detail="Soru sayısı ve öğrenci cevapları sayıları eşleşmiyor.")
 
-
-        if not questions_from_db or not answers_from_db or len(questions_from_db) != len(answers_from_db):
-            # Corrected typo here: HTTP_400_BAD_BAD_REQUEST -> HTTP_400_BAD_REQUEST
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Değerlendirmek için eksik veya eşleşmeyen soru/cevaplar.")
-
-        evaluation_results_list = await examai.check_answers_with_openai_assistant(
-            request.student_name,
-            request.question_type,
-            questions_from_db,
-            answers_from_db,
-            choices_from_db if request.question_type == "Multiple Choice" else None
+        evaluation_results = await examai.check_answers_with_openai_assistant(
+            questions=questions,
+            correct_answers=correct_answers,
+            answers=answers
         )
         
-        record_data = {
-            "student_name": request.student_name,
-            "question_type": request.question_type,
-            "results": evaluation_results_list
-        }
-        await examai.upsert_exam_record(record_data)
+        exam_record['results'] = evaluation_results
+        await examai.upsert_exam_record(exam_record)
 
-        return {"message": "Cevaplar başarıyla değerlendirildi ve kaydedildi.", "evaluation_result": evaluation_results_list}
-    except HTTPException:
-        raise
+        return evaluation_results
+        
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Cevaplar değerlendirilirken veya kaydedilirken hata oluştu: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Cevaplar değerlendirilirken hata oluştu: {e}")
 
 @app.post("/exam-record", summary="Yeni bir sınav kaydı oluşturur veya mevcut olanı günceller.")
 async def create_or_update_exam_record_endpoint(
@@ -275,6 +312,73 @@ async def delete_exam_record_endpoint(
     except Exception as e:
         # Genel hatalar için 500 döndür
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Sınav kaydı silinirken hata oluştu: {e}")
+
+@app.delete("/delete/open-ended/single", summary="Belirli bir açık uçlu soruyu siler.")
+async def delete_single_open_ended_question_endpoint(
+    request: DeleteSingleQuestionRequest,
+    _ = Depends(verify_castrumai_api_key)
+):
+    try:
+        updated_record = await examai.delete_single_question(
+            request.student_name,
+            "Open Ended",
+            request.index
+        )
+        if updated_record:
+            return {"message": "Açık uçlu soru başarıyla silindi.", "record": updated_record}
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Kayıt bulunamadığı için soru silinemedi.")
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Soru silinirken hata oluştu: {e}")
+
+@app.delete("/delete/open-ended/all", summary="Tüm açık uçlu soruları siler.")
+async def delete_all_open_ended_questions_endpoint(
+    request: DeleteAllQuestionsRequest,
+    _ = Depends(verify_castrumai_api_key)
+):
+    try:
+        updated_record = await examai.delete_all_questions(
+            request.student_name,
+            "Open Ended"
+        )
+        if updated_record:
+            return {"message": "Tüm açık uçlu sorular başarıyla silindi.", "record": updated_record}
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Kayıt bulunamadığı için sorular silinemedi.")
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Sorular silinirken hata oluştu: {e}")
+
+@app.delete("/delete/mcq/single", summary="Belirli bir çoktan seçmeli soruyu siler.")
+async def delete_single_mcq_question_endpoint(
+    request: DeleteSingleQuestionRequest,
+    _ = Depends(verify_castrumai_api_key)
+):
+    try:
+        updated_record = await examai.delete_single_question(
+            request.student_name,
+            "Multiple Choice",
+            request.index
+        )
+        if updated_record:
+            return {"message": "Çoktan seçmeli soru başarıyla silindi.", "record": updated_record}
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Kayıt bulunamadığı için soru silinemedi.")
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Soru silinirken hata oluştu: {e}")
+
+@app.delete("/delete/mcq/all", summary="Tüm çoktan seçmeli soruları siler.")
+async def delete_all_mcq_questions_endpoint(
+    request: DeleteAllQuestionsRequest,
+    _ = Depends(verify_castrumai_api_key)
+):
+    try:
+        updated_record = await examai.delete_all_questions(
+            request.student_name,
+            "Multiple Choice"
+        )
+        if updated_record:
+            return {"message": "Tüm çoktan seçmeli sorular başarıyla silindi.", "record": updated_record}
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Kayıt bulunamadığı için sorular silinemedi.")
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Sorular silinirken hata oluştu: {e}")
+
 
 @app.get("/record", summary="Belirli bir sınav kaydını döndürür.")
 async def get_single_exam_record_endpoint(student_name: str, question_type: str, _ = Depends(verify_castrumai_api_key)):
@@ -324,51 +428,33 @@ async def get_question_count_endpoint(student_name: str, question_type: str, _ =
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Soru sayısı alınırken hata oluştu: {e}")
 
-@app.get("/choice", summary="Belirli bir çoktan seçmeli sorunun belirli bir seçeneğini döndürür.")
-async def get_single_choice_endpoint(student_name: str, question_index: int, choice_index: int, _ = Depends(verify_castrumai_api_key)):
+@app.get("/correct-answer", summary="Belirli bir sorunun doğru cevabını döndürür.")
+async def get_single_correct_answer_endpoint(student_name: str, question_type: str, index: int, _ = Depends(verify_castrumai_api_key)):
     try:
-        question_type = "Multiple Choice"
-        choice = await examai.get_choice(student_name, question_type, question_index, choice_index)
-        if choice is None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Seçenek bulunamadı veya kayıt mevcut değil.")
-        return {"choice": choice}
+        correct_answer = await examai.get_correct_answer(student_name, question_type, index)
+        if correct_answer is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Doğru cevap bulunamadı veya kayıt mevcut değil.")
+        return {"correct_answer": correct_answer}
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Seçenek alınırken hata oluştu: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Doğru cevap alınırken hata oluştu: {e}")
 
-@app.get("/choices", summary="Belirli bir çoktan seçmeli sorunun tüm seçeneklerini döndürür.")
-async def get_all_choices_for_single_question_endpoint(student_name: str, question_index: int, _ = Depends(verify_castrumai_api_key)):
+@app.get("/correct-answers", summary="Bir sınavdaki tüm doğru cevapları döndürür.")
+async def get_all_correct_answers_endpoint(student_name: str, question_type: str, _ = Depends(verify_castrumai_api_key)):
     try:
-        question_type = "Multiple Choice"
-        record = await examai.get_student_exam_record(student_name, question_type)
-        if not record or 'choices' not in record or not record['choices']:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Çoktan seçmeli seçenekler bulunamadı veya kayıt mevcut değil.")
-
-        if question_index < 0 or question_index >= len(record['choices']):
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Geçersiz soru indeksi.")
-
-        return {"choices": record['choices'][question_index]}
+        correct_answers = await examai.get_correct_answers_all(student_name, question_type)
+        if correct_answers is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Doğru cevaplar bulunamadı veya kayıt mevcut değil.")
+        return {"correct_answers": correct_answers}
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Belirli sorunun seçenekleri alınırken hata oluştu: {e}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Tüm doğru cevaplar alınırken hata oluştu: {e}")
 
-@app.get("/choices/all", summary="Belirli bir öğrencinin tüm çoktan seçmeli sorularının tüm seçeneklerini döndürür.")
-async def get_all_choices_for_student_endpoint(student_name: str, _ = Depends(verify_castrumai_api_key)):
-    try:
-        # This endpoint is specifically for "Multiple Choice" questions.
-        question_type = "Multiple Choice"
-        record = await examai.get_student_exam_record(student_name, question_type)
-        if not record or 'choices' not in record:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Çoktan seçmeli seçenekler bulunamadı veya kayıt mevcut değil.")
-        return {"choices": record['choices']}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Tüm seçenekler alınırken hata oluştu: {e}")
 
-@app.get("/answer", summary="Belirli bir cevabı döndürür.")
+
+@app.get("/answer", summary="Belirli bir öğrenci cevabını döndürür.")
 async def get_single_answer_endpoint(student_name: str, question_type: str, index: int, _ = Depends(verify_castrumai_api_key)):
     try:
         answer = await examai.get_answer(student_name, question_type, index)
@@ -380,7 +466,7 @@ async def get_single_answer_endpoint(student_name: str, question_type: str, inde
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Cevap alınırken hata oluştu: {e}")
 
-@app.get("/answers", summary="Tüm cevapları döndürür.")
+@app.get("/answers", summary="Tüm öğrenci cevaplarını döndürür.")
 async def get_all_answers_endpoint(student_name: str, question_type: str, _ = Depends(verify_castrumai_api_key)):
     try:
         answers = await examai.get_answers_all(student_name, question_type)
@@ -440,7 +526,7 @@ async def get_plagiarism_violations_endpoint(student_name: str, question_type: s
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"İntihal ihlalleri alınırken hata oluştu: {e}")
 
-@app.put("/update/question", summary="Belirli bir soruyu günceller.")
+@app.put("/update/question", summary="Belirli bir soruyu ve isteğe bağlı olarak doğru cevabını günceller.")
 async def update_single_question_endpoint(
     request: UpdateQuestionValueRequest,
     _ = Depends(verify_castrumai_api_key)
@@ -450,15 +536,19 @@ async def update_single_question_endpoint(
             request.student_name,
             request.question_type,
             request.question_index,
-            request.value
+            request.question,
+            request.correct_answer
         )
         if updated_record:
-            return {"message": "Soru başarıyla güncellendi.", "questions": updated_record.get('questions', [])}
+            return {
+                "questions": updated_record.get('questions'),
+                "correct_answers": updated_record.get('correct_answers')
+            }
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Soru güncellenemedi veya kayıt bulunamadı.")
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Soru güncellenirken hata oluştu: {e}")
 
-@app.put("/update/questions/all", summary="Belirli bir öğrencinin tüm sorularını günceller.")
+@app.put("/update/questions/all", summary="Belirli bir öğrencinin tüm sorularını ve isteğe bağlı olarak doğru cevaplarını günceller.")
 async def update_all_questions_endpoint(
     request: UpdateAllQuestionsRequest,
     _ = Depends(verify_castrumai_api_key)
@@ -467,11 +557,17 @@ async def update_all_questions_endpoint(
         updated_record = await examai.update_all_questions_in_record(
             request.student_name,
             request.question_type,
-            request.questions
+            request.questions,
+            request.correct_answers
         )
         if updated_record:
-            return {"message": "Tüm sorular başarıyla güncellendi.", "questions": updated_record.get('questions', [])}
+            return {
+                "questions": updated_record.get('questions'),
+                "correct_answers": updated_record.get('correct_answers')
+            }
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tüm sorular güncellenemedi veya kayıt bulunamadı.")
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Tüm sorular güncellenirken hata oluştu: {e}")
 
@@ -489,7 +585,7 @@ async def update_choice_endpoint(
             request.value
         )
         if updated_record:
-            return {"message": "Seçenek başarıyla güncellendi.", "choices": updated_record.get('choices', [])}
+            return {"message": "Seçenek başarıyla güncellendi.", "record": updated_record}
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Seçenek güncellenemedi veya kayıt bulunamadı.")
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Seçenek güncellenirken hata oluştu: {e}")
@@ -500,38 +596,72 @@ async def update_question_choices_endpoint(
     _ = Depends(verify_castrumai_api_key)
 ):
     try:
-        question_type = "Multiple Choice"
         updated_record = await examai.update_choices_for_single_question_in_record(
             request.student_name,
-            question_type,
+            "Multiple Choice",
             request.question_index,
             request.choices
         )
         if updated_record:
-            return {"message": "Sorunun seçenekleri başarıyla güncellendi.", "choices": updated_record.get('choices', [])}
+            return {"message": "Sorunun seçenekleri başarıyla güncellendi.", "record": updated_record}
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Sorunun seçenekleri güncellenemedi veya kayıt bulunamadı.")
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Sorunun seçenekleri güncellenirken hata oluştu: {e}")
 
-@app.put("/update/choices/all", summary="Belirli bir öğrencinin tüm çoktan seçmeli sorularının tüm seçeneklerini günceller.")
+@app.put("/update/choices/all", summary="Tüm çoktan seçmeli soruların tüm seçeneklerini günceller.")
 async def update_all_choices_endpoint(
     request: UpdateAllChoicesRequest,
     _ = Depends(verify_castrumai_api_key)
 ):
     try:
-        question_type = "Multiple Choice"
         updated_record = await examai.update_all_choices_in_record(
             request.student_name,
-            question_type,
+            "Multiple Choice",
             request.choices
         )
         if updated_record:
-            return {"message": "Tüm seçenekler başarıyla güncellendi.", "choices": updated_record.get('choices', [])}
+            return {"message": "Tüm seçenekler başarıyla güncellendi.", "record": updated_record}
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tüm seçenekler güncellenemedi veya kayıt bulunamadı.")
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Tüm seçenekler güncellenirken hata oluştu: {e}")
 
-@app.put("/update/answer", summary="Belirli bir sorunun cevabını günceller.")
+@app.put("/update/correct-answer", summary="Belirli bir sorunun doğru cevabını günceller.")
+async def update_single_correct_answer_endpoint(
+    request: UpdateCorrectAnswerRequest,
+    _ = Depends(verify_castrumai_api_key)
+):
+    try:
+        updated_record = await examai.update_correct_answer_in_record(
+            request.student_name,
+            request.question_type,
+            request.index,
+            request.correct_answer
+        )
+        if updated_record:
+            return {"message": "Doğru cevap başarıyla güncellendi.", "record": updated_record}
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Kayıt bulunamadığı için doğru cevap güncellenemedi.")
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Doğru cevap güncellenirken hata oluştu: {e}")
+
+@app.put("/update/correct-answers/all", summary="Tüm doğru cevapları toplu olarak günceller.")
+async def update_all_correct_answers_endpoint(
+    request: UpdateAllCorrectAnswersRequest,
+    _ = Depends(verify_castrumai_api_key)
+):
+    try:
+        updated_record = await examai.update_all_correct_answers_in_record(
+            request.student_name,
+            request.question_type,
+            request.correct_answers
+        )
+        if updated_record:
+            return {"message": "Tüm doğru cevaplar başarıyla güncellendi.", "record": updated_record}
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Kayıt bulunamadığı için doğru cevaplar güncellenemedi.")
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Tüm doğru cevaplar güncellenirken hata oluştu: {e}")
+
+
+@app.put("/update/answer", summary="Belirli bir sorunun öğrenci tarafından verilen cevabını günceller.")
 async def update_single_answer_endpoint(
     request: AnswerUpdateRequest,
     _ = Depends(verify_castrumai_api_key)
@@ -549,7 +679,7 @@ async def update_single_answer_endpoint(
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Cevap güncellenirken hata oluştu: {e}")
 
-@app.put("/update/answers/bulk", summary="Tüm cevapları toplu olarak günceller.")
+@app.put("/update/answers/bulk", summary="Tüm öğrenci cevaplarını toplu olarak günceller.")
 async def update_bulk_answers_endpoint(
     request: AnswersBulkUpdateRequest,
     _ = Depends(verify_castrumai_api_key)
@@ -617,3 +747,36 @@ async def update_plagiarism_violation_endpoint(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="İntihal ihlali eklenemedi/güncellenemedi veya kayıt bulunamadı.")
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"İntihal ihlali eklenirken/güncellenirken hata oluştu: {e}")
+
+async def delete_single_question(student_name: str, question_type: str, index: int) -> dict | None:
+    """Belirtilen indeksteki bir soruyu ve ilgili tüm verilerini siler."""
+    record = await get_student_exam_record(student_name, question_type)
+    if not record:
+        return None
+
+    # İlgili tüm listelerden belirtilen indeksteki elemanı sil
+    # 'choices' sadece Multiple Choice için geçerli olacak, diğerlerinde hata vermeyecek
+    for key in ['questions', 'correct_answers', 'answers', 'results', 'choices']:
+        if key in record and isinstance(record.get(key), list) and index < len(record[key]):
+            record[key].pop(index)
+
+    return await upsert_exam_record(record)
+
+async def delete_all_questions(student_name: str, question_type: str) -> dict | None:
+    """Belirtilen sınav türündeki tüm soruları ve ilgili verileri siler."""
+    record = await get_student_exam_record(student_name, question_type)
+    if not record:
+        return None
+
+    # İlgili tüm listeleri boşalt
+    record['questions'] = []
+    record['correct_answers'] = []
+    record['answers'] = []
+    record['results'] = []
+    if question_type == "Multiple Choice":
+        record['choices'] = []
+    
+    # Puanı da sıfırla
+    record['total_score'] = 0.0
+
+    return await upsert_exam_record(record)
