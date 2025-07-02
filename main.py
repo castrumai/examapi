@@ -11,7 +11,7 @@ load_dotenv()
 app = FastAPI(
     title="ExamAI API",
     description="Yeni nesil OpenAI asistanları ile güncellenmiş, sınav ve değerlendirme işlemlerini yürüten API.",
-    version="2.0.0"
+    version="1.0.0"
 )
 
 # --- API Anahtar Doğrulaması ---
