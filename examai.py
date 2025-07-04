@@ -305,14 +305,23 @@ async def update_all_choices_in_record(student_name: str, question_type: str, al
 
 async def update_answer(student_name: str, question_type: str, index: int, answer: str) -> dict | None:
     record = await get_student_exam_record(student_name, question_type)
-    if not record or not isinstance(record.get('answers'), list):
-        return None
-    answers = record['answers']
-    if index < len(answers):
-        answers[index] = answer
+    
+    if not record:
+        record = {"student_name": student_name, "question_type": question_type, "answers": []}
+
+    answers = record.get('answers')
+    if not isinstance(answers, list):
+        answers = []
         record['answers'] = answers
-        return await upsert_exam_record(record)
-    return None
+
+    while len(answers) <= index:
+        answers.append(None)
+
+    answers[index] = answer
+    
+    record['answers'] = answers
+    
+    return await upsert_exam_record(record)
 
 async def update_answers_bulk(student_name: str, question_type: str, new_answers: List[str]) -> dict | None:
     return await upsert_exam_record({
@@ -474,3 +483,6 @@ async def delete_all_questions(student_name: str, question_type: str) -> dict | 
     record['total_score'] = None
 
     return await upsert_exam_record(record)
+
+
+
