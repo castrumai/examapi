@@ -431,3 +431,33 @@ async def get_correct_answers_all(student_name: str, question_type: str) -> List
     record = await get_student_exam_record(student_name, question_type)
     return record.get('correct_answers') if record and isinstance(record.get('correct_answers'), list) else None
 
+async def delete_single_question(student_name: str, question_type: str, index: int) -> dict | None:
+    """Belirtilen indeksteki bir soruyu ve ilgili tüm verilerini siler."""
+    record = await get_student_exam_record(student_name, question_type)
+    if not record:
+        return None
+
+    for key in ['questions', 'correct_answers', 'answers', 'results', 'choices']:
+        if key in record and isinstance(record.get(key), list) and index < len(record[key]):
+            record[key].pop(index)
+
+    return await upsert_exam_record(record)
+
+async def delete_all_questions(student_name: str, question_type: str) -> dict | None:
+    """Belirtilen sınav türündeki tüm soruları ve ilgili verileri null olarak ayarlar."""
+    record = await get_student_exam_record(student_name, question_type)
+    if not record:
+        return None
+
+    record['questions'] = None
+    record['correct_answers'] = None
+    record['answers'] = None
+    record['results'] = None
+    record['choices'] = None
+    record['total_score'] = None
+
+    return await upsert_exam_record(record)
+
+
+
+
