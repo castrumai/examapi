@@ -179,24 +179,30 @@ async def generate_mcq(
     request: MultipleChoiceQuestionGenerationRequest,
     _ = Depends(verify_castrumai_api_key)
 ):
+    # Yeni Kontroller
+    if request.number_of_questions <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Üretilecek soru sayısı 0'dan büyük olmalıdır."
+        )
+    if request.number_of_choices <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Üretilecek şık sayısı 0'dan büyük olmalıdır."
+        )
+        
     try:
         existing_record = await examai.get_student_exam_record(request.student_name, "Multiple Choice")
 
-        # --- YENİ KONTROL MEKANİZMASI ---
         if existing_record:
             existing_choices = existing_record.get('choices')
-            # Eğer mevcut sınavda daha önceden eklenmiş şıklar varsa
             if existing_choices and len(existing_choices) > 0 and len(existing_choices[0]) > 0:
-                # Mevcut şık sayısını al
                 current_choice_count = len(existing_choices[0])
-                # Yeni istenen şık sayısı ile karşılaştır
                 if current_choice_count != request.number_of_choices:
-                    # Eğer farklıysa, hata fırlat
                     raise HTTPException(
-                        status_code=400, # Bad Request
+                        status_code=400,
                         detail=f"Mevcut sınavda her soru için {current_choice_count} şık bulunmaktadır. Farklı sayıda ({request.number_of_choices}) şıkka sahip yeni sorular ekleyemezsiniz. Lütfen aynı şık sayısını kullanın veya yeni bir sınav oluşturun."
                     )
-        # --- KONTROL MEKANİZMASI SONU ---
 
         generated_data = await examai.generate_multiple_choice_questions_with_openai_assistant(
             request.number_of_questions,
@@ -236,10 +242,8 @@ async def generate_mcq(
         return generated_data
 
     except HTTPException as e:
-        # Önceden fırlatılan HTTP hatalarını doğrudan gönder
         raise e
     except Exception as e:
-        # Diğer tüm hatalar için genel bir hata mesajı göster
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Çoktan seçmeli sorular üretilirken beklenmeyen bir hata oluştu: {e}")
 
 
