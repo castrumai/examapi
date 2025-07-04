@@ -174,7 +174,7 @@ async def generate_open_ended(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Açık uçlu sorular üretilirken hata oluştu: {e}")
 
 
-@app.post("/generate/mcq", summary="AI ile çoktan seçmeli soruları, şıkları ve doğru cevapları oluşturur ve veri tabanına ekler.")
+@app.post("/generate/mcq", summary='AI ile çoktan seçmeli soruları ve şıkları oluşturur, veri tabanına ekler. Çoktan seçmeli sorular otomatik kontrol edilir. Cevapları harf olarak eklenmelidir örn. "a", "A", "b" benzeri')
 async def generate_mcq(
     request: MultipleChoiceQuestionGenerationRequest,
     _ = Depends(verify_castrumai_api_key)
@@ -649,7 +649,7 @@ async def update_all_correct_answers_endpoint(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Tüm doğru cevaplar güncellenirken hata oluştu: {e}")
 
 
-@app.put("/update/answer", summary="Belirli bir sorunun öğrenci tarafından verilen cevabını günceller.")
+@app.put("/update/answer", summary='Belirli bir sorunun öğrenci tarafından verilen cevabını günceller. Çoktan seçmeli sorular için cevaplar harf olarak eklenmelidir örn. "a", "A", "b" benzeri')
 async def update_single_answer_endpoint(
     request: AnswerUpdateRequest,
     _ = Depends(verify_castrumai_api_key)
@@ -667,7 +667,7 @@ async def update_single_answer_endpoint(
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Cevap güncellenirken hata oluştu: {e}")
 
-@app.put("/update/answers/bulk", summary="Tüm öğrenci cevaplarını toplu olarak günceller.")
+@app.put("/update/answers/bulk", summary='Tüm öğrenci cevaplarını toplu olarak günceller. Yeni cevaplar array olarak ["cevap 1", "cevap 2, ...] formatında eklenmelidir. Çoktan seçmeli sorular için ise ["a", "b", "a"] formatında harf olarak eklenmelidir.')
 async def update_bulk_answers_endpoint(
     request: AnswersBulkUpdateRequest,
     _ = Depends(verify_castrumai_api_key)
