@@ -122,14 +122,16 @@ class UpdateAllCorrectAnswersRequest(BaseModel):
 
 class DeleteSingleQuestionRequest(BaseModel):
     student_name: str
+    question_type: str
     index: int
 
 class DeleteAllQuestionsRequest(BaseModel):
     student_name: str
+    question_type: str
 
 # --- API Uç Noktaları ---
 
-@app.post("/generate/open-ended", summary="Yeni asistanla açık uçlu sorular ve cevapları oluşturur ve mevcut kayda ekler.")
+@app.post("/generate/open-ended", summary="AI ile açık uçlu sorular oluşturur veri tabanına ekler.")
 async def generate_open_ended(
     request: OpenEndedQuestionGenerationRequest,
     _ = Depends(verify_castrumai_api_key)
@@ -172,7 +174,7 @@ async def generate_open_ended(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Açık uçlu sorular üretilirken hata oluştu: {e}")
 
 
-@app.post("/generate/mcq", summary="Yeni asistanla çoktan seçmeli soruları, şıkları ve doğru cevapları oluşturur ve mevcut kayda ekler.")
+@app.post("/generate/mcq", summary="AI ile çoktan seçmeli soruları, şıkları ve doğru cevapları oluşturur ve veri tabanına ekler.")
 async def generate_mcq(
     request: MultipleChoiceQuestionGenerationRequest,
     _ = Depends(verify_castrumai_api_key)
@@ -241,7 +243,7 @@ async def generate_mcq(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Çoktan seçmeli sorular üretilirken beklenmeyen bir hata oluştu: {e}")
 
 
-@app.post("/evaluate", summary="Verilen açık uçlu cevapları değerlendirir.")
+@app.post("/evaluate", summary="Verilen açık uçlu cevapları değerlendirir. Bu fonksiyonu kullanmadan önce update/answer veya update/answer/bulk fonksiyonları ile soru sayısı kadar cevap eklenmelidir.")
 async def evaluate_answers(
     request: AnswerEvaluationRequest,
     _ = Depends(verify_castrumai_api_key)
@@ -313,71 +315,41 @@ async def delete_exam_record_endpoint(
         # Genel hatalar için 500 döndür
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Sınav kaydı silinirken hata oluştu: {e}")
 
-@app.delete("/delete/open-ended/single", summary="Belirli bir açık uçlu soruyu siler.")
-async def delete_single_open_ended_question_endpoint(
+
+@app.delete("/delete/question", summary="Belirtilen türdeki bir sınavdan belirli bir soruyu siler.")
+async def delete_single_question_endpoint(
     request: DeleteSingleQuestionRequest,
     _ = Depends(verify_castrumai_api_key)
 ):
     try:
         updated_record = await examai.delete_single_question(
             request.student_name,
-            "Open Ended",
+            request.question_type,
             request.index
         )
         if updated_record:
-            return {"message": "Açık uçlu soru başarıyla silindi.", "record": updated_record}
+            return {"message": "Soru başarıyla silindi.", "updated_questions": updated_record.get('questions', [])}
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Kayıt bulunamadığı için soru silinemedi.")
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Soru silinirken hata oluştu: {e}")
 
-@app.delete("/delete/open-ended/all", summary="Tüm açık uçlu soruları siler.")
-async def delete_all_open_ended_questions_endpoint(
+@app.delete("/delete/questions/all", summary="Belirtilen türdeki bir sınavdaki tüm soruları siler.")
+async def delete_all_questions_endpoint(
     request: DeleteAllQuestionsRequest,
     _ = Depends(verify_castrumai_api_key)
 ):
     try:
         updated_record = await examai.delete_all_questions(
             request.student_name,
-            "Open Ended"
+            request.question_type
         )
         if updated_record:
-            return {"message": "Tüm açık uçlu sorular başarıyla silindi.", "record": updated_record}
+            return {"message": "Tüm sorular başarıyla silindi.", "updated_questions": updated_record.get('questions', [])}
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Kayıt bulunamadığı için sorular silinemedi.")
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Sorular silinirken hata oluştu: {e}")
 
-@app.delete("/delete/mcq/single", summary="Belirli bir çoktan seçmeli soruyu siler.")
-async def delete_single_mcq_question_endpoint(
-    request: DeleteSingleQuestionRequest,
-    _ = Depends(verify_castrumai_api_key)
-):
-    try:
-        updated_record = await examai.delete_single_question(
-            request.student_name,
-            "Multiple Choice",
-            request.index
-        )
-        if updated_record:
-            return {"message": "Çoktan seçmeli soru başarıyla silindi.", "record": updated_record}
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Kayıt bulunamadığı için soru silinemedi.")
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Soru silinirken hata oluştu: {e}")
 
-@app.delete("/delete/mcq/all", summary="Tüm çoktan seçmeli soruları siler.")
-async def delete_all_mcq_questions_endpoint(
-    request: DeleteAllQuestionsRequest,
-    _ = Depends(verify_castrumai_api_key)
-):
-    try:
-        updated_record = await examai.delete_all_questions(
-            request.student_name,
-            "Multiple Choice"
-        )
-        if updated_record:
-            return {"message": "Tüm çoktan seçmeli sorular başarıyla silindi.", "record": updated_record}
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Kayıt bulunamadığı için sorular silinemedi.")
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Sorular silinirken hata oluştu: {e}")
 
 
 @app.get("/record", summary="Belirli bir sınav kaydını döndürür.")
@@ -780,3 +752,4 @@ async def delete_all_questions(student_name: str, question_type: str) -> dict | 
     record['total_score'] = 0.0
 
     return await upsert_exam_record(record)
+
