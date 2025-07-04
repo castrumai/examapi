@@ -731,5 +731,3 @@ async def update_plagiarism_violation_endpoint(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="İntihal ihlali eklenemedi/güncellenemedi veya kayıt bulunamadı.")
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"İntihal ihlali eklenirken/güncellenirken hata oluştu: {e}")
-
-
