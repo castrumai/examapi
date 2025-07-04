@@ -319,7 +319,7 @@ async def delete_exam_record_endpoint(
 @app.delete("/delete/question", summary="Belirtilen türdeki bir sınavdan belirli bir soruyu siler.")
 async def delete_single_question_endpoint(
     request: DeleteSingleQuestionRequest,
-    _ = Depends(verify_castrumai_api_key)
+    _ = Depends(verify_castrumai_api_key) # API anahtar doğrulamanız
 ):
     try:
         updated_record = await examai.delete_single_question(
@@ -327,28 +327,40 @@ async def delete_single_question_endpoint(
             request.question_type,
             request.index
         )
-        if updated_record:
-            return {"message": "Soru başarıyla silindi.", "updated_questions": updated_record.get('questions', [])}
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Kayıt bulunamadığı için soru silinemedi.")
+        
+        if updated_record is None:
+             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Kayıt bulunamadı.")
+
+        return {"message": "Soru başarıyla silindi.", "updated_questions": updated_record.get('questions', [])}
+    
+    except ValueError as e:
+        # examai'den gelen doğrulama hatalarını yakala
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+    
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Soru silinirken hata oluştu: {e}")
 
 @app.delete("/delete/questions/all", summary="Belirtilen türdeki bir sınavdaki tüm soruları siler.")
 async def delete_all_questions_endpoint(
     request: DeleteAllQuestionsRequest,
-    _ = Depends(verify_castrumai_api_key)
+    _ = Depends(verify_castrumai_api_key) # API anahtar doğrulamanız
 ):
     try:
         updated_record = await examai.delete_all_questions(
             request.student_name,
             request.question_type
         )
-        if updated_record:
-            return {"message": "Tüm sorular başarıyla silindi.", "updated_questions": updated_record.get('questions', [])}
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Kayıt bulunamadığı için sorular silinemedi.")
+        if updated_record is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Kayıt bulunamadı.")
+
+        return {"message": "Tüm sorular başarıyla silindi.", "updated_questions": updated_record.get('questions')} # None dönebilir
+    
+    except ValueError as e:
+        # examai'den gelen doğrulama hatalarını yakala
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Sorular silinirken hata oluştu: {e}")
-
 
 
 
@@ -720,36 +732,4 @@ async def update_plagiarism_violation_endpoint(
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"İntihal ihlali eklenirken/güncellenirken hata oluştu: {e}")
 
-async def delete_single_question(student_name: str, question_type: str, index: int) -> dict | None:
-    """Belirtilen indeksteki bir soruyu ve ilgili tüm verilerini siler."""
-    record = await get_student_exam_record(student_name, question_type)
-    if not record:
-        return None
-
-    # İlgili tüm listelerden belirtilen indeksteki elemanı sil
-    # 'choices' sadece Multiple Choice için geçerli olacak, diğerlerinde hata vermeyecek
-    for key in ['questions', 'correct_answers', 'answers', 'results', 'choices']:
-        if key in record and isinstance(record.get(key), list) and index < len(record[key]):
-            record[key].pop(index)
-
-    return await upsert_exam_record(record)
-
-async def delete_all_questions(student_name: str, question_type: str) -> dict | None:
-    """Belirtilen sınav türündeki tüm soruları ve ilgili verileri siler."""
-    record = await get_student_exam_record(student_name, question_type)
-    if not record:
-        return None
-
-    # İlgili tüm listeleri boşalt
-    record['questions'] = []
-    record['correct_answers'] = []
-    record['answers'] = []
-    record['results'] = []
-    if question_type == "Multiple Choice":
-        record['choices'] = []
-    
-    # Puanı da sıfırla
-    record['total_score'] = 0.0
-
-    return await upsert_exam_record(record)
 
