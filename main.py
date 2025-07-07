@@ -30,11 +30,13 @@ async def verify_castrumai_api_key(castrumai_apikey: Optional[str] = Header(None
 class OpenEndedQuestionGenerationRequest(BaseModel):
     student_name: str
     number_of_questions: int
+    question_topic: str
 
 class MultipleChoiceQuestionGenerationRequest(BaseModel):
     student_name: str
     number_of_questions: int
     number_of_choices: int
+    question_topic: str
 
 class AnswerEvaluationRequest(BaseModel):
     student_name: str
@@ -131,14 +133,16 @@ class DeleteAllQuestionsRequest(BaseModel):
 
 # --- API Uç Noktaları ---
 
-@app.post("/generate/open-ended", summary="AI ile açık uçlu sorular oluşturur veri tabanına ekler.")
+
+@app.post("/generate/open-ended", summary="AI ile açık uçlu sorular oluşturur veri tabanına ekler. question_topic olarak konu adı veya direk modül sayısı örneğin modül 3 yazılmalıdır.")
 async def generate_open_ended(
     request: OpenEndedQuestionGenerationRequest,
     _ = Depends(verify_castrumai_api_key)
 ):
     try:
         generated_data = await examai.generate_open_ended_questions_with_openai_assistant(
-            request.number_of_questions
+            request.number_of_questions,
+            request.question_topic
         )
 
         new_questions = generated_data.get("questions", [])
@@ -168,10 +172,14 @@ async def generate_open_ended(
         
         await examai.upsert_exam_record(record_data)
 
-        return new_questions
+        # Response'ta sadece questions dön
+        return {
+            "questions": new_questions
+        }
 
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Açık uçlu sorular üretilirken hata oluştu: {e}")
+
 
 
 @app.post("/generate/mcq", summary='AI ile çoktan seçmeli soruları ve şıkları oluşturur, veri tabanına ekler. Çoktan seçmeli sorular otomatik kontrol edilir. Cevapları harf olarak eklenmelidir örn. "a", "A", "b" benzeri')
@@ -206,7 +214,8 @@ async def generate_mcq(
 
         generated_data = await examai.generate_multiple_choice_questions_with_openai_assistant(
             request.number_of_questions,
-            request.number_of_choices
+            request.number_of_choices,
+            request.question_topic # BURAYA EKLENDİ
         )
         
         new_questions = generated_data.get("questions", [])
