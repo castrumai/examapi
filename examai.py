@@ -68,34 +68,54 @@ async def _run_openai_assistant(assistant_id: str, user_message_content: str) ->
         raise
 
 
-async def generate_open_ended_questions_with_openai_assistant(number_of_questions: int) -> Dict[str, List[str]]:
+async def generate_open_ended_questions_with_openai_assistant(number_of_questions: int, question_topic: str) -> Dict[str, List[str]]:
     assistant_id = OPENAI_ASSISTANT_ID_OPEN_ENDED
-    user_message = f"Lütfen bilgi tabanını kullanarak {number_of_questions} adet açık uçlu soru ve bu soruların ideal cevaplarını oluştur. Yanıtını KESİNLİKLE şu JSON formatında döndür: {{\"questions\": [\"Soru 1\", ...], \"correct_answers\": [\"Cevap 1\", ...]}}"
-    
+    user_message = f"""Aşağıdaki bilgi kaynağını kullanarak, {number_of_questions} adet açık uçlu soru üret ve her bir soru için ideal bir cevap oluştur. Cevapların kısa ve öz olmalı. Yanıtını sadece şu JSON formatında ver:
+
+{{
+  "questions": ["Soru 1", "Soru 2", ...],
+  "correct_answers": ["Cevap 1", "Cevap 2", ...]
+}}
+
+Bilgi kaynağı sınav sistemine önceden tanımlı, bu nedenle tekrar bilgi istemene gerek yok.
+
+Konu: {question_topic}
+"""
+
     response_text = await _run_openai_assistant(assistant_id, user_message)
-    
+
     try:
+        # Eğer OpenAI cevabı ```json ... ``` formatındaysa json kısmını ayıkla
         json_match = re.search(r'```json\s*(\{.*?\})\s*```', response_text, re.DOTALL)
         if json_match:
             json_string = json_match.group(1)
         else:
             json_string = response_text
-            
+
         parsed_response = json.loads(json_string)
-        
+
         if isinstance(parsed_response, dict) and "questions" in parsed_response and "correct_answers" in parsed_response:
             return parsed_response
         else:
             raise ValueError("Açık uçlu soru asistanından beklenen formatta yanıt alınamadı.")
-            
+
     except (json.JSONDecodeError, ValueError) as e:
         print(f"Açık uçlu soru yanıtı işlenirken hata: {e} - Gelen yanıt: {response_text}")
         raise HTTPException(status_code=500, detail="Açık uçlu soru asistanından geçerli bir JSON yanıtı alınamadı.")
 
 
-async def generate_multiple_choice_questions_with_openai_assistant(number_of_questions: int, number_of_choices: int) -> Dict[str, Any]:
+
+async def generate_multiple_choice_questions_with_openai_assistant(number_of_questions: int, number_of_choices: int, question_topic: str) -> Dict[str, Any]:
     assistant_id = OPENAI_ASSISTANT_ID_MULTIPLE_CHOICE
-    user_message = f"GÖREV: Sınav verisi hazırla. KURAL 1: Tam olarak {number_of_questions} soru üret. KURAL 2: Her soru için tam olarak {number_of_choices} şık üret. KURAL 3 (KRİTİK): Her sorunun doğru cevabı, şıklar listesinin HER ZAMAN İLK elemanı olmalıdır. KURAL 4 (KRİTİK): Şıklar harf (A, B) içermeyen, sadece metinden oluşan string'ler olmalıdır. Yanıtını yalnızca şu JSON formatında ver: {{\"sorular\":[\"...\"],\"şıklar\":[[\"Doğru Cevap\", \"Yanlış Cevap 1\"]]}}"
+    # user_message güncellendi, JSON formatındaki anahtarlar "questions" ve "options" olarak değiştirildi
+    user_message = f"""GÖREV: Sınav verisi hazırla. Konu: {question_topic}.
+KURAL 1: Tam olarak {number_of_questions} soru üret.
+KURAL 2: Her soru için tam olarak {number_of_choices} şık üret.
+KURAL 3 (KRİTİK): Her sorunun doğru cevabı, şıklar listesinin HER ZAMAN İLK elemanı olmalıdır.
+KURAL 4 (KRİTİK): Şıklar harf (A, B) içermeyen, sadece metinden oluşan string'ler olmalıdır.
+ÇIKTI DİLİ: Üretilen tüm sorular ve şıklar tamamen İngilizce olmalıdır.
+Yanıtını yalnızca şu JSON formatında ver: {{"questions":["..."],"options":[["Correct Option", "Distractor 1"]]}}
+""" # <-- Buradaki JSON örneği güncellendi
 
     response_text = await _run_openai_assistant(assistant_id, user_message)
 
@@ -108,32 +128,35 @@ async def generate_multiple_choice_questions_with_openai_assistant(number_of_que
             
         parsed_response = json.loads(json_string)
 
-        if "sorular" not in parsed_response or "şıklar" not in parsed_response:
-             raise ValueError("Asistandan beklenen formatta yanıt alınamadı.")
+        # Buradaki kontrol ve atamalar "questions" ve "options" olarak değiştirildi
+        if "questions" not in parsed_response or "options" not in parsed_response:
+             raise ValueError("Asistandan beklenen formatta yanıt alınamadı (İngilizce anahtarlar 'questions' ve 'options' bekleniyordu).")
 
-        questions = parsed_response["sorular"]
-        unshuffled_choices_list = parsed_response["şıklar"]
+        questions = parsed_response["questions"]
+        unshuffled_choices_list = parsed_response["options"] # Değişken adı da daha açıklayıcı yapıldı
 
         final_choices = []
         final_correct_answers = []
 
-        for choices in unshuffled_choices_list:
-            if not choices:
+        for choices_list_for_question in unshuffled_choices_list: # Döngü değişkeni adı da güncellendi
+            if not choices_list_for_question:
                 continue
 
-            correct_answer_text = choices[0]
-            random.shuffle(choices)
-            
-            correct_answer_index = choices.index(correct_answer_text)
+            correct_answer_text = choices_list_for_question[0]
+            random.shuffle(choices_list_for_question) # Şıkları karıştır
+
+            # Doğru cevabın karıştırma sonrası yeni indeksini bul
+            correct_answer_index = choices_list_for_question.index(correct_answer_text)
             correct_answer_letter = chr(ord('A') + correct_answer_index)
             final_correct_answers.append(correct_answer_letter)
 
-            lettered_choices = [f"{chr(ord('A') + i)}) {choice}" for i, choice in enumerate(choices)]
+            # Şıkları harflerle formatla (A), B), ...)
+            lettered_choices = [f"{chr(ord('A') + i)}) {choice}" for i, choice in enumerate(choices_list_for_question)]
             final_choices.append(lettered_choices)
 
         return {
             "questions": questions,
-            "choices": final_choices,
+            "choices": final_choices, # main.py'nin beklediği anahtar "choices"
             "correct_answers": final_correct_answers
         }
 
@@ -483,6 +506,3 @@ async def delete_all_questions(student_name: str, question_type: str) -> dict | 
     record['total_score'] = None
 
     return await upsert_exam_record(record)
-
-
-
