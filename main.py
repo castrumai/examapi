@@ -189,62 +189,6 @@ class VerbalFeedbackResponse(BaseModel):
 
 # main.py dosyanıza bu yeni endpoint'i geçici olarak ekleyin
 
-@app.get("/debug-record/{exam_name}/{student_name}", summary="Belirli bir sınav kaydındaki listelerin uzunluğunu kontrol eder.")
-async def debug_exam_record(exam_name: str, student_name: str):
-    """
-    Bu endpoint, veritabanındaki belirli bir sınav kaydını çeker ve içindeki
-    ana listelerin (questions, question_topics, vb.) tiplerini ve eleman sayılarını
-    döndürür. "Veri tutarsızlığı" hatasının kaynağını bulmak için kullanılır.
-    """
-    question_type_to_use = "Open Ended"
-    print(f"--- DEBUGGING RECORD for {exam_name} / {student_name} ---")
-    
-    try:
-        exam_record = await examai.get_student_exam_record(exam_name, student_name, question_type_to_use)
-
-        if not exam_record:
-            print("HATA: Sınav kaydı bulunamadı.")
-            raise HTTPException(status_code=404, detail="Sınav kaydı bulunamadı.")
-
-        # Veritabanından gelen her bir listeyi al ve analiz et
-        question_texts = exam_record.get('questions')
-        question_topics = exam_record.get('question_topics')
-        evaluation_rubrics = exam_record.get('evaluation_rubrics')
-        answers = exam_record.get('answers')
-
-        # Her bir listenin tipini ve uzunluğunu içeren bir rapor oluştur
-        debug_info = {
-            "message": "Veritabanından çekilen verinin analizi aşağıdadır. 'length' değerlerinin hepsi aynı olmalıdır.",
-            "exam_name": exam_name,
-            "student_name": student_name,
-            "questions_list": {
-                "type": str(type(question_texts)),
-                "length": len(question_texts) if isinstance(question_texts, list) else None
-            },
-            "question_topics_list": {
-                "type": str(type(question_topics)),
-                "length": len(question_topics) if isinstance(question_topics, list) else None
-            },
-            "evaluation_rubrics_list": {
-                "type": str(type(evaluation_rubrics)),
-                "length": len(evaluation_rubrics) if isinstance(evaluation_rubrics, list) else None
-            },
-            "answers_list": {
-                "type": str(type(answers)),
-                "length": len(answers) if isinstance(answers, list) else None
-            }
-        }
-        
-        print("--- VERİTABANINDAN ÇEKİLEN VERİ ANALİZİ ---")
-        print(json.dumps(debug_info, indent=2, ensure_ascii=False))
-        print("-----------------------------------------")
-
-        # Bu raporu hem konsola yazdır hem de kullanıcıya döndür
-        return debug_info
-        
-    except Exception as e:
-        print(f"Debug endpoint'inde hata: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 # --- API Uç Noktaları ---
@@ -315,6 +259,47 @@ async def generate_open_ended_with_rubrics(
     except Exception as e:
         if isinstance(e, HTTPException): raise e
         raise HTTPException(status_code=500, detail=f"Açık uçlu sorular ve rubric'ler üretilirken bir hata oluştu: {str(e)}")
+
+
+
+
+@app.put("/update/answer", summary='Belirli bir sorunun öğrenci tarafından verilen cevabını günceller. Çoktan seçmeli sorular için cevaplar harf olarak eklenmelidir örn. "a", "A", "b" benzeri')
+async def update_single_answer_endpoint(
+    request: AnswerUpdateRequest,
+    _ = Depends(verify_castrumai_api_key)
+):
+    try:
+        updated_record = await examai.update_answer(
+            request.exam_name,
+            request.student_name,
+            request.question_type,
+            request.index,
+            request.answer
+        )
+        if updated_record:
+            return {"message": "Cevap başarıyla güncellendi.", "answers": updated_record.get('answers', [])}
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cevap güncellenemedi veya kayıt bulunamadı.")
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Cevap güncellenirken hata oluştu: {e}")
+
+@app.put("/update/answers/bulk", summary='Tüm öğrenci cevaplarını toplu olarak günceller. Yeni cevaplar array olarak ["cevap 1", "cevap 2, ...] formatında eklenmelidir. Çoktan seçmeli sorular için ise ["a", "b", "a"] formatında harf olarak eklenmelidir.')
+async def update_bulk_answers_endpoint(
+    request: AnswersBulkUpdateRequest,
+    _ = Depends(verify_castrumai_api_key)
+):
+    try:
+        updated_record = await examai.update_answers_bulk(
+            request.exam_name,
+            request.student_name,
+            request.question_type,
+            request.answers
+        )
+        if updated_record:
+            return {"message": "Cevaplar toplu olarak başarıyla güncellendi.", "answers": updated_record.get('answers', [])}
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cevaplar toplu olarak güncellenemedi veya kayıt bulunamadı.")
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Cevaplar toplu olarak güncellenirken hata oluştu: {e}")
+
 
 
 
@@ -518,6 +503,52 @@ async def generate_verbal_exam_questions(request: VerbalQuestionRequest, _ = Dep
     except Exception as e:
         print(f"Sözel soru üretilirken hata oluştu: {e}")
         raise HTTPException(status_code=500, detail=f"Sözel sorular üretilirken bir hata oluştu: {e}")
+
+
+@app.post("/answers/voice", summary="Öğrenci sesli cevabını alır, metne çevirir ve veri tabanına kaydeder. question_type 'Verbal Question' olmalıdır.")
+async def add_voice_answer_endpoint(
+    exam_name: str,
+    student_name: str,
+    index: int, # Cevabın kaydedileceği sorunun indeksi
+    file: UploadFile = File(..., description="Ses dosyası (örn: .mp3, .wav, .m4a)"),
+    _ = Depends(verify_castrumai_api_key)
+):
+    """
+    Belirtilen sınav, öğrenci ve indeks için sesli bir cevabı alır,
+    OpenAI Whisper kullanarak metne çevirir ve ardından veri tabanındaki
+    ilgili 'Verbal Question' tipindeki kayda ekler.
+    """
+    if file.content_type not in ["audio/mpeg", "audio/wav", "audio/x-m4a", "audio/mp4", "audio/webm"]:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Desteklenmeyen dosya türü: {file.content_type}. Lütfen mp3, wav, m4a, mp4, webm gibi bir ses dosyası yükleyin."
+        )
+
+    try:
+        # Ses dosyasını bellek içi bir File objesine dönüştürüyoruz
+        # OpenAI API, dosya objesi bekliyor.
+        import io
+        audio_bytes = await file.read()
+        audio_file_like_object = io.BytesIO(audio_bytes)
+        audio_file_like_object.name = file.filename # Dosya adını korumak önemli
+
+        # examai modülündeki yeni fonksiyonu çağırıyoruz
+        transcribed_text = await examai.add_voice_answer(
+            exam_name=exam_name,
+            student_name=student_name,
+            index=index,
+            audio_file=audio_file_like_object # Bellek içi dosya objesini gönder
+        )
+
+        return {
+            "message": "Sesli cevap başarıyla kaydedildi.",
+            "transcribed_text": transcribed_text
+        }
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Sesli cevap işlenirken hata oluştu: {e}")
+
 
 
 # --- YENİ ENDPOINT: Sözel Cevaplar İçin Geri Bildirim Üretme ---
@@ -935,43 +966,6 @@ async def update_all_correct_answers_endpoint(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Tüm doğru cevaplar güncellenirken hata oluştu: {e}")
 
 
-@app.put("/update/answer", summary='Belirli bir sorunun öğrenci tarafından verilen cevabını günceller. Çoktan seçmeli sorular için cevaplar harf olarak eklenmelidir örn. "a", "A", "b" benzeri')
-async def update_single_answer_endpoint(
-    request: AnswerUpdateRequest,
-    _ = Depends(verify_castrumai_api_key)
-):
-    try:
-        updated_record = await examai.update_answer(
-            request.exam_name,
-            request.student_name,
-            request.question_type,
-            request.index,
-            request.answer
-        )
-        if updated_record:
-            return {"message": "Cevap başarıyla güncellendi.", "answers": updated_record.get('answers', [])}
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cevap güncellenemedi veya kayıt bulunamadı.")
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Cevap güncellenirken hata oluştu: {e}")
-
-@app.put("/update/answers/bulk", summary='Tüm öğrenci cevaplarını toplu olarak günceller. Yeni cevaplar array olarak ["cevap 1", "cevap 2, ...] formatında eklenmelidir. Çoktan seçmeli sorular için ise ["a", "b", "a"] formatında harf olarak eklenmelidir.')
-async def update_bulk_answers_endpoint(
-    request: AnswersBulkUpdateRequest,
-    _ = Depends(verify_castrumai_api_key)
-):
-    try:
-        updated_record = await examai.update_answers_bulk(
-            request.exam_name,
-            request.student_name,
-            request.question_type,
-            request.answers
-        )
-        if updated_record:
-            return {"message": "Cevaplar toplu olarak başarıyla güncellendi.", "answers": updated_record.get('answers', [])}
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Cevaplar toplu olarak güncellenemedi veya kayıt bulunamadı.")
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Cevaplar toplu olarak güncellenirken hata oluştu: {e}")
-
 @app.put("/update/result", summary="Belirli bir sorunun sonucunu günceller.")
 async def update_single_result_endpoint(
     request: ResultUpdateRequest,
@@ -1059,48 +1053,6 @@ async def get_all_generated_questions_for_exam(exam_name: str, question_type: st
 
 # --- NEW ENDPOINT FOR VOICE ANSWERS ---
 
-@app.post("/answers/voice", summary="Öğrenci sesli cevabını alır, metne çevirir ve veri tabanına kaydeder. question_type 'Verbal Question' olmalıdır.")
-async def add_voice_answer_endpoint(
-    exam_name: str,
-    student_name: str,
-    index: int, # Cevabın kaydedileceği sorunun indeksi
-    file: UploadFile = File(..., description="Ses dosyası (örn: .mp3, .wav, .m4a)"),
-    _ = Depends(verify_castrumai_api_key)
-):
-    """
-    Belirtilen sınav, öğrenci ve indeks için sesli bir cevabı alır,
-    OpenAI Whisper kullanarak metne çevirir ve ardından veri tabanındaki
-    ilgili 'Verbal Question' tipindeki kayda ekler.
-    """
-    if file.content_type not in ["audio/mpeg", "audio/wav", "audio/x-m4a", "audio/mp4", "audio/webm"]:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Desteklenmeyen dosya türü: {file.content_type}. Lütfen mp3, wav, m4a, mp4, webm gibi bir ses dosyası yükleyin."
-        )
 
-    try:
-        # Ses dosyasını bellek içi bir File objesine dönüştürüyoruz
-        # OpenAI API, dosya objesi bekliyor.
-        import io
-        audio_bytes = await file.read()
-        audio_file_like_object = io.BytesIO(audio_bytes)
-        audio_file_like_object.name = file.filename # Dosya adını korumak önemli
-
-        # examai modülündeki yeni fonksiyonu çağırıyoruz
-        transcribed_text = await examai.add_voice_answer(
-            exam_name=exam_name,
-            student_name=student_name,
-            index=index,
-            audio_file=audio_file_like_object # Bellek içi dosya objesini gönder
-        )
-
-        return {
-            "message": "Sesli cevap başarıyla kaydedildi.",
-            "transcribed_text": transcribed_text
-        }
-    except HTTPException as e:
-        raise e
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Sesli cevap işlenirken hata oluştu: {e}")
 
 # --- end of new endpoint ---
