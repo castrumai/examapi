@@ -1,6 +1,6 @@
 # ExamAI API
 
-FastAPI service that generates, evaluates, and manages exam content with OpenAI models, Supabase persistence, and PDF‑backed retrieval. Designed for human instructors to launch and grade assessments quickly while keeping full auditability.
+FastAPI service that generates, evaluates, and manages exam content with OpenAI models, Supabase persistence, and PDF‑backed retrieval. Designed for human instructors to launch and grade assessments quickly while keeping full auditability
 
 ## Highlights
 - **AI question generation**: Open-ended, multiple-choice, and verbal questions grounded in course PDFs via Supabase `match_chunks` retrieval.
